@@ -20,6 +20,7 @@ import os
 import sys
 import glob
 import hashlib
+import re
 import sqlite3
 import struct
 
@@ -312,21 +313,49 @@ class ImageResolver:
         self.cache = cache
 
     def get_image_md5(self, local_id):
-        """通过 local_id 查 message_resource.db 获取图片文件 MD5"""
+        """通过 local_id 查 message_resource.db 获取图片文件 MD5
+
+        Windows: MessageResourceInfo.local_id + packed_info 含 MD5
+        macOS: 列名为 message_local_id；packed_info 可能为空，
+               回退到 MessageResourceDetail.packed_info
+        """
         path = self.cache.get("message\\message_resource.db")
         if not path:
             return None
 
         conn = sqlite3.connect(path)
         try:
-            row = conn.execute(
-                "SELECT packed_info FROM MessageResourceInfo WHERE local_id = ?",
-                (local_id,)
-            ).fetchone()
-            if row and row[0]:
-                return extract_md5_from_packed_info(row[0])
-        except Exception:
-            pass
+            # 尝试 Windows 列名 (local_id)，失败则用 macOS 列名 (message_local_id)
+            for col in ("local_id", "message_local_id"):
+                try:
+                    row = conn.execute(
+                        f"SELECT packed_info FROM MessageResourceInfo WHERE {col} = ?",
+                        (local_id,)
+                    ).fetchone()
+                    if row and row[0]:
+                        md5 = extract_md5_from_packed_info(row[0])
+                        if md5:
+                            return md5
+                    break  # 查询成功（即使结果为空），不再尝试其他列名
+                except Exception:
+                    continue  # 列名不存在，尝试下一个
+
+            # 回退: 通过 MessageResourceDetail 查找
+            for col in ("local_id", "message_local_id"):
+                try:
+                    row = conn.execute(
+                        f"""SELECT d.packed_info FROM MessageResourceDetail d
+                            JOIN MessageResourceInfo i ON d.message_id = i.message_id
+                            WHERE i.{col} = ?""",
+                        (local_id,)
+                    ).fetchone()
+                    if row and row[0]:
+                        md5 = extract_md5_from_packed_info(row[0])
+                        if md5:
+                            return md5
+                    break
+                except Exception:
+                    continue
         finally:
             conn.close()
 
@@ -351,16 +380,43 @@ class ImageResolver:
 
         return sorted(results)
 
-    def decode_image(self, username, local_id):
+    def _get_md5_from_msg_table(self, db_path, table_name, local_id):
+        """从 Msg 表的 packed_info_data 列提取图片文件 MD5（macOS 回退方案）
+
+        macOS 上 message_resource.db 的 packed_info 为空，
+        但 Msg 表有 packed_info_data 列包含 protobuf 编码的文件 MD5。
+        """
+        try:
+            conn = sqlite3.connect(db_path)
+            row = conn.execute(
+                f"SELECT packed_info_data FROM [{table_name}] WHERE local_id = ?",
+                (local_id,)
+            ).fetchone()
+            conn.close()
+            if row and row[0]:
+                return extract_md5_from_packed_info(row[0])
+        except Exception:
+            pass
+        return None
+
+    def decode_image(self, username, local_id, db_path=None, table_name=None):
         """完整流程：local_id → MD5 → .dat → 解密
+
+        Args:
+            username: 用户标识
+            local_id: 消息 local_id
+            db_path: 消息数据库路径（用于 macOS XML 回退）
+            table_name: 消息表名（用于 macOS XML 回退）
 
         Returns:
             dict with keys: success, path, format, md5, error
         """
-        # 1. 获取 MD5
+        # 1. 获取 MD5（优先 resource db，回退到 Msg 表 packed_info_data）
         file_md5 = self.get_image_md5(local_id)
+        if not file_md5 and db_path and table_name:
+            file_md5 = self._get_md5_from_msg_table(db_path, table_name, local_id)
         if not file_md5:
-            return {'success': False, 'error': f'无法从 message_resource.db 找到 local_id={local_id} 的图片信息'}
+            return {'success': False, 'error': f'无法找到 local_id={local_id} 的图片 MD5（resource db 和 Msg 表均无结果）'}
 
         # 2. 找 .dat 文件
         dat_files = self.find_dat_files(username, file_md5)
@@ -407,20 +463,32 @@ class ImageResolver:
         conn = sqlite3.connect(db_path)
         try:
             rows = conn.execute(f"""
-                SELECT local_id, create_time
+                SELECT local_id, create_time, packed_info_data
                 FROM [{table_name}]
-                WHERE local_type = 3
+                WHERE (local_type & 65535) = 3
                 ORDER BY create_time DESC
                 LIMIT ?
             """, (limit,)).fetchall()
-        except Exception as e:
-            conn.close()
-            return []
+        except Exception:
+            # packed_info_data 列不存在时回退（Windows 旧版）
+            try:
+                rows = conn.execute(f"""
+                    SELECT local_id, create_time, NULL
+                    FROM [{table_name}]
+                    WHERE (local_type & 65535) = 3
+                    ORDER BY create_time DESC
+                    LIMIT ?
+                """, (limit,)).fetchall()
+            except Exception:
+                conn.close()
+                return []
         conn.close()
 
         results = []
-        for local_id, create_time in rows:
+        for local_id, create_time, packed_data in rows:
             file_md5 = self.get_image_md5(local_id)
+            if not file_md5 and packed_data:
+                file_md5 = extract_md5_from_packed_info(packed_data)
             info = {
                 'local_id': local_id,
                 'create_time': create_time,

@@ -134,12 +134,13 @@ def get_session_state(conn):
 
 
 def format_msg_type(t):
+    base = t & 0xFFFF  # macOS local_type 高位是 subtype
     types = {
         1: '文本', 3: '图片', 34: '语音', 42: '名片',
         43: '视频', 47: '表情', 48: '位置', 49: '链接/文件',
         50: '语音/视频通话', 10000: '系统消息', 10002: '撤回',
     }
-    return types.get(t, f'type={t}')
+    return types.get(base, f'type={t}')
 
 
 def main():

@@ -243,19 +243,21 @@ def load_contact_names():
 
 
 def format_msg_type(t):
+    base = t & 0xFFFF  # macOS local_type 高位是 subtype
     return {
         1: '文本', 3: '图片', 34: '语音', 42: '名片',
         43: '视频', 47: '表情', 48: '位置', 49: '链接/文件',
         50: '通话', 10000: '系统', 10002: '撤回',
-    }.get(t, f'type={t}')
+    }.get(base, f'type={t}')
 
 
 def msg_type_icon(t):
+    base = t & 0xFFFF  # macOS local_type 高位是 subtype
     return {
         1: '💬', 3: '🖼️', 34: '🎤', 42: '👤',
         43: '🎬', 47: '😀', 48: '📍', 49: '🔗',
         50: '📞', 10000: '⚙️', 10002: '↩️',
-    }.get(t, '📨')
+    }.get(base, '📨')
 
 
 def broadcast_sse(msg_data):

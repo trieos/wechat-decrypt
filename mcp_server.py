@@ -235,11 +235,12 @@ def get_contact_full():
 # ============ 辅助函数 ============
 
 def format_msg_type(t):
+    base = t & 0xFFFF  # macOS local_type 高位是 subtype
     return {
         1: '文本', 3: '图片', 34: '语音', 42: '名片',
         43: '视频', 47: '表情', 48: '位置', 49: '链接/文件',
         50: '通话', 10000: '系统', 10002: '撤回',
-    }.get(t, f'type={t}')
+    }.get(base, f'type={t}')
 
 
 def resolve_username(chat_name):
@@ -513,14 +514,33 @@ def search_messages(keyword: str, limit: int = 20) -> str:
                 display = names.get(username, username) if username else tname
 
                 try:
+                    remaining = limit - len(results)
+                    # 非压缩消息：SQL LIKE 高效过滤
                     rows = conn.execute(f"""
                         SELECT local_type, create_time, message_content,
                                WCDB_CT_message_content
                         FROM [{tname}]
-                        WHERE message_content LIKE ?
+                        WHERE message_content LIKE ? AND
+                              (WCDB_CT_message_content = 0 OR WCDB_CT_message_content IS NULL)
                         ORDER BY create_time DESC
                         LIMIT ?
-                    """, (f'%{keyword}%', limit - len(results))).fetchall()
+                    """, (f'%{keyword}%', remaining)).fetchall()
+                    # 压缩消息（ct=4）：SQL LIKE 不适用于 BLOB，需解压后 Python 过滤
+                    remaining2 = limit - len(results) - len(rows)
+                    if remaining2 > 0:
+                        compressed_rows = conn.execute(f"""
+                            SELECT local_type, create_time, message_content,
+                                   WCDB_CT_message_content
+                            FROM [{tname}]
+                            WHERE WCDB_CT_message_content = 4
+                            ORDER BY create_time DESC
+                        """).fetchall()
+                        for cr in compressed_rows:
+                            if len(rows) >= remaining:
+                                break
+                            text = _decompress_content(cr[2], cr[3])
+                            if text and keyword in text:
+                                rows.append(cr)
                 except Exception:
                     continue
 
@@ -708,7 +728,8 @@ def decode_image(chat_name: str, local_id: int) -> str:
     if not username:
         return f"找不到聊天对象: {chat_name}"
 
-    result = _image_resolver.decode_image(username, local_id)
+    db_path, table_name = _find_msg_table_for_user(username)
+    result = _image_resolver.decode_image(username, local_id, db_path, table_name)
     if result['success']:
         return (
             f"解密成功!\n"
