@@ -37,6 +37,13 @@ DECRYPTED_DIR = _cfg["decrypted_dir"]
 with open(KEYS_FILE) as f:
     ALL_KEYS = json.load(f)
 
+def _norm_key(k):
+    """规范化 rel_key：尝试匹配 ALL_KEYS 中的正斜杠或反斜杠格式"""
+    if k in ALL_KEYS:
+        return k
+    alt = k.replace('\\', '/') if '\\' in k else k.replace('/', '\\')
+    return alt if alt in ALL_KEYS else k
+
 # ============ 解密函数 ============
 
 def decrypt_page(enc_key, page_data, pgno):
@@ -111,9 +118,10 @@ class DBCache:
         self._cache = {}  # rel_key -> (db_mtime, wal_mtime, tmp_path)
 
     def get(self, rel_key):
+        rel_key = _norm_key(rel_key)
         if rel_key not in ALL_KEYS:
             return None
-        rel_path = rel_key.replace('\\', os.sep)
+        rel_path = rel_key.replace('\\', '/') if os.sep == '/' else rel_key.replace('/', '\\')
         db_path = os.path.join(DB_DIR, rel_path)
         wal_path = db_path + "-wal"
         if not os.path.exists(db_path):
@@ -191,8 +199,7 @@ def get_contact_names():
         except Exception:
             pass
 
-    # 实时解密
-    path = _cache.get("contact\\contact.db")
+    path = _cache.get("contact\\contact.db")  # _norm_key handles separator
     if path:
         try:
             _contact_names, _contact_full = _load_contacts_from(path)
@@ -258,7 +265,7 @@ def _parse_message_content(content, local_type, is_group):
 # 消息 DB 的 rel_keys（排除 fts/resource/media/biz）
 MSG_DB_KEYS = sorted([
     k for k in ALL_KEYS
-    if k.startswith("message\\message_") and k.endswith(".db")
+    if (k.startswith("message\\message_") or k.startswith("message/message_")) and k.endswith(".db")
     and "fts" not in k and "resource" not in k
 ])
 

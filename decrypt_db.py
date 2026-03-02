@@ -141,8 +141,10 @@ def main():
     total_bytes = 0
 
     for rel, path, sz in db_files:
-        # 用反斜杠格式查找key (json中的key是Windows路径)
+        # 兼容Windows反斜杠和POSIX正斜杠格式的key
         rel_key = rel.replace('/', '\\')
+        if rel_key not in keys:
+            rel_key = rel.replace('\\', '/')
         if rel_key not in keys:
             print(f"SKIP: {rel} (无密钥)")
             failed += 1

@@ -522,7 +522,8 @@ def main():
     with open(KEYS_FILE) as f:
         keys = json.load(f)
 
-    enc_key = bytes.fromhex(keys["session\\session.db"]["enc_key"])
+    session_key_name = "session\\session.db" if "session\\session.db" in keys else "session/session.db"
+    enc_key = bytes.fromhex(keys[session_key_name]["enc_key"])
     session_db = os.path.join(DB_DIR, "session", "session.db")
 
     print("加载联系人...", flush=True)
@@ -537,7 +538,11 @@ def main():
     print("Ctrl+C 停止\n", flush=True)
 
     try:
-        os.system(f'cmd.exe /c start http://localhost:{PORT}')
+        import sys as _sys
+        if _sys.platform == 'darwin':
+            os.system(f'open http://localhost:{PORT}')
+        elif _sys.platform == 'win32':
+            os.system(f'cmd.exe /c start http://localhost:{PORT}')
     except:
         pass
 
